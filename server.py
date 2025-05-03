@@ -1,10 +1,16 @@
 import os
+import uuid
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from text import generate_output
 from image import generate_image
-from fastapi.responses import FileResponse
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -36,40 +42,60 @@ class StyleRequest(BaseModel):
 @app.post("/generate-outfit/")
 async def generate_outfit(request: StyleRequest):
     try:
-        print("Received request:", request.dict())  # Debugging
-        
-        # Generate outfit text
+        logger.info("Received request: %s", request.dict())  # Logging request
+
+        # Generate outfit description using model
         model_name = "tunedModels/outfitsuggestiongenerator-usqw4b296kfe"
-        prompt = f"Create an outfit including Top,Bottoms and Foot wear based on: {request.style_idea} for {request.gender} from {request.ethnicity} , {request.age} years old,hoving {request.skin_color} complexion,to be worne in {request.season}, with {request.accessories} accessories,for {request.occasion} with matching footware and model looking at the camera."
+        prompt = (
+            f"Create an outfit including top, bottoms, and footwear based on: {request.style_idea} "
+            f"for a {request.gender} from {request.ethnicity}, {request.age} years old, "
+            f"having a {request.skin_color} complexion, to be worn in {request.season}, "
+            f"with {request.accessories} accessories, for {request.occasion}. "
+            f"Include matching footwear and ensure the model is looking at the camera."
+        )
         
         outfit_description = generate_output(model_name, prompt)
         
         if not outfit_description:
             raise Exception("Text generation failed. Received empty response.")
 
-        print("Generated outfit description:", outfit_description)  # Debugging
+        logger.info("Generated outfit description: %s", outfit_description)  # Logging generated description
 
         # Generate image
-        image_path = "generated_images/outfit.png"
-        generated_image = generate_image(f"a {request.gender} model of age {request.age} from ethinicity {request.ethnicity} with {request.skin_color} complexion see into the camera with perfect lightining and wearing {outfit_description} with complementing background that enhances the outfit and model, full body image")
+        image_filename = f"{uuid.uuid4()}.png"
+        image_path = f"/tmp/{image_filename}"  # Use a temp directory for image storage in Render
+
+        image_prompt = (
+            f"A {request.gender} model, {request.age} years old, from {request.ethnicity} ethnicity, "
+            f"with {request.skin_color} complexion, looking into the camera under perfect lighting, "
+            f"wearing {outfit_description}. The image should be full body with a background that complements the outfit and model."
+        )
+
+        generated_image = generate_image(image_prompt)
 
         if generated_image is None:
             raise Exception("Image generation failed.")
 
+        # Save the generated image to a temp directory
         generated_image.save(image_path)
 
+        # For Render, the public URL will look like `https://your-app-name.onrender.com/generated_images/{image_filename}`
+        image_url = f"https://fashionai-api.onrender.com/generated_images/{image_filename}"
+
+        # Return the generated data with the image URL
         return {
             "outfit_description": outfit_description,
-            "image_url": f"http://localhost:8000/generated_images/outfit.png"
+            "image_url": image_url
         }
 
     except Exception as e:
-        print("Error in /generate-outfit/:", str(e))  # Debugging
+        logger.error("Error in /generate-outfit/: %s", str(e))  # Logging error
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @app.get("/generated_images/{filename}")
 async def get_generated_image(filename: str):
-    image_path = os.path.join("generated_images", filename)
+    # Serve image from /tmp folder (Render storage for temporary files)
+    image_path = f"/tmp/{filename}"
     if os.path.exists(image_path):
         return FileResponse(image_path)
     raise HTTPException(status_code=404, detail="Image not found")
